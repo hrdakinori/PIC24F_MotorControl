@@ -1,0 +1,8 @@
+Target : PIC24FJ256GB106
+
+Bluetooth Protocol Stack : lwalkera/lwBT - GitHub
+
+Bluetooth Protocol : SPP
+
+MotorDrivar : TB6612FNG
+
