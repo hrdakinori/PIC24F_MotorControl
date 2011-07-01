@@ -19,7 +19,7 @@ Device demo.
 Software License Agreement
 
 The software supplied herewith by Microchip Technology Incorporated
-(the ìCompanyÅE for its PICmicroÆ Microcontroller is intended and
+(the "Company") for its PICmicro(R) Microcontroller is intended and
 supplied to you, the Companyís customer, for use solely and
 exclusively on Microchip PICmicro Microcontroller products. The
 software is owned by the Company and/or its supplier, and is
@@ -63,7 +63,8 @@ CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.
 #include "lwip/sys.h"
 #include "lwip/stats.h"
 
-#define DEBUG_MODE
+//DEBUG_MODE 
+//LWIP_DEBUG
 
 // *****************************************************************************
 // *****************************************************************************
@@ -601,7 +602,7 @@ int main ( void )
     }
     if ( USBHostInit(0) == TRUE )
     {
-//        UART2PrintString( "\r\n\r\n***** USB Custom Demo App Initialized *****\r\n\r\n" );
+        UART2PrintString( "\r\n\r\n***** USB Custom Demo App Initialized *****\r\n\r\n" );
     }
     else
     {
