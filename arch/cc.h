@@ -31,8 +31,8 @@ typedef int			mem_ptr_t;
 
 #define PACK_STRUCT_STRUCT __attribute__((__packed__))
 
-#define LWIP_PLATFORM_DIAG(x) UART2Printf x //printf x
-#define LWIP_PLATFORM_ASSERT(x) UART2Printf(x) //printf(x)//; raise(SIGTRAP)
+#define LWIP_PLATFORM_DIAG(x) //printf x
+#define LWIP_PLATFORM_ASSERT(x) //printf(x)//; raise(SIGTRAP)
 
 #define WORDCAST(x) (*((u8_t*)(x))|*((u8_t*)(x)+1) << 8)
 #define WORDIN(x,w) do {\

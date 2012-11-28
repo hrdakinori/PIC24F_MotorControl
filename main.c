@@ -42,6 +42,7 @@ CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.
 #include <stdlib.h>
 #define USE_AND_OR /* To enable AND_OR mask setting */
 #include<ports.h>
+#include<pps.h>
 #include<timer.h>
 #include<outcompare.h>
 
@@ -72,7 +73,7 @@ CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.
 // *****************************************************************************
 // *****************************************************************************
 
-#ifdef __C30__
+#if defined __C30__ || defined __XC16__
     // Configuration Bit settings  for an Explorer 16 with USB PICtail Plus
     //      Primary Oscillator:             HS
     //      Internal USB 3.3v Regulator:    Disabled
@@ -92,12 +93,17 @@ CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.
     //      JTAG Port Enable:               Disabled
 
     #if defined(__PIC24FJ256GB110__)
-        _CONFIG2(FNOSC_PRIPLL & POSCMOD_HS & PLL_96MHZ_ON & PLLDIV_DIV2) // Primary HS OSC with PLL, USBPLL /2
+        _CONFIG2(FNOSC_PRIPLL & POSCMOD_HS & PLL_96MHZ_ON & PLLDIV_DIV2 & IESO_OFF) // Primary HS OSC with PLL, USBPLL /2
         _CONFIG1(JTAGEN_OFF & FWDTEN_OFF & ICS_PGx2)   // JTAG off, watchdog timer off
     #elif defined(__PIC24FJ64GB004__)
         _CONFIG1(WDTPS_PS1 & FWPSA_PR32 & WINDIS_OFF & FWDTEN_OFF & ICS_PGx1 & GWRP_OFF & GCP_OFF & JTAGEN_OFF)
-        _CONFIG2(POSCMOD_HS & I2C1SEL_PRI & IOL1WAY_OFF & OSCIOFNC_ON & FCKSM_CSDCMD & FNOSC_PRIPLL & PLL96MHZ_ON & PLLDIV_DIV2 & IESO_ON)
+        _CONFIG2(POSCMOD_HS & I2C1SEL_PRI & IOL1WAY_OFF & OSCIOFNC_ON & FCKSM_CSDCMD & FNOSC_PRIPLL & PLL96MHZ_ON & PLLDIV_DIV2 & IESO_OFF)
         _CONFIG3(WPFP_WPFP0 & SOSCSEL_SOSC & WUTSEL_LEG & WPDIS_WPDIS & WPCFG_WPCFGDIS & WPEND_WPENDMEM)
+        _CONFIG4(DSWDTPS_DSWDTPS3 & DSWDTOSC_LPRC & RTCOSC_SOSC & DSBOREN_OFF & DSWDTEN_OFF)
+    #elif defined(__PIC24FJ64GB002__)
+        _CONFIG1(WDTPS_PS1 & FWPSA_PR32 & WINDIS_OFF & FWDTEN_OFF & ICS_PGx1 & GWRP_OFF & GCP_OFF & JTAGEN_OFF)
+        _CONFIG2(POSCMOD_NONE & I2C1SEL_PRI & IOL1WAY_OFF & OSCIOFNC_ON & FCKSM_CSDCMD & FNOSC_FRCPLL & PLL96MHZ_ON & PLLDIV_DIV2 & IESO_OFF)
+        _CONFIG3(WPFP_WPFP0 & SOSCSEL_IO & WUTSEL_LEG & WPDIS_WPDIS & WPCFG_WPCFGDIS & WPEND_WPENDMEM)
         _CONFIG4(DSWDTPS_DSWDTPS3 & DSWDTOSC_LPRC & RTCOSC_SOSC & DSBOREN_OFF & DSWDTEN_OFF)
     #elif defined(__PIC24FJ256GB106__)
         _CONFIG1( JTAGEN_OFF & GCP_OFF & GWRP_OFF & COE_OFF & FWDTEN_OFF & ICS_PGx1) 
@@ -105,6 +111,10 @@ CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.
     #elif defined(__PIC24FJ256DA210__) || defined(__PIC24FJ256GB210__)
         _CONFIG1(FWDTEN_OFF & ICS_PGx2 & GWRP_OFF & GCP_OFF & JTAGEN_OFF)
         _CONFIG2(POSCMOD_HS & IOL1WAY_ON & OSCIOFNC_ON & FCKSM_CSDCMD & FNOSC_PRIPLL & PLL96MHZ_ON & PLLDIV_DIV2 & IESO_OFF)
+    #elif defined(__dsPIC33EP512MU810__)||defined(__PIC24EP512GU810__)
+        _FOSCSEL(FNOSC_FRC);
+        _FOSC(FCKSM_CSECMD & OSCIOFNC_OFF & POSCMD_XT);
+        _FWDT(FWDTEN_OFF);    
     #endif
 
 #elif defined( __PIC32MX__ )
@@ -127,7 +137,7 @@ CONSEQUENTIAL DAMAGES, FOR ANY REASON WHATSOEVER.
     #pragma config BWP      = OFF           // Boot Flash Write Protect
     #pragma config PWP      = OFF           // Program Flash Write Protect
     #pragma config ICESEL   = ICS_PGx2      // ICE/ICD Comm Channel Select
-    #pragma config DEBUG    = ON            // Background Debugger Enable
+    
 
 #else
 
@@ -218,20 +228,30 @@ BOOL InitializeSystem ( void )
         TRISD = 0x00C0;
 
    #elif defined( __PIC24FJ256GB106__ )
-		// Configure U2RX - put on pin 17 (RP8)
-		RPINR19bits.U2RXR = 8;
-		// Configure U2TX - put on pin 16 (RP7)
-		RPOR3bits.RP7R = 5;
-
-		// OC 1
-		RPOR5bits.RP11R = 18;
-		// OC 2
-		RPOR12bits.RP24R = 19;
-
 //        OSCCON = 0x3302;    // Enable secondary oscillator
         CLKDIV = 0x0000;    // Set PLL prescaler (1:1)
 
-   #elif defined(__PIC24FJ64GB004__)
+        // Configure U2RX - put on pin 17 (RP8)
+        RPINR19bits.U2RXR = 8;
+        // Configure U2TX - put on pin 16 (RP7)
+        RPOR3bits.RP7R = 5;
+
+        // OC 1
+        RPOR5bits.RP11R = 18;
+        // OC 2
+        RPOR12bits.RP24R = 19;
+
+	mPORTEOutputConfig(0x1f);
+
+	mPORTEWrite(0x10);
+
+        mPORTDOutputConfig(0x03);
+
+	OpenTimer2(T2_ON | T2_PS_1_8 ,0xffff); //Timer is configured for 10 msec
+	OpenOC1(OC_IDLE_CON | OC_PWM_FAULT_CLEAR | OC_TIMER2_SRC | OC_PWM_EDGE_ALIGN ,0,0x0,0x0);
+	OpenOC2(OC_IDLE_CON | OC_PWM_FAULT_CLEAR | OC_TIMER2_SRC | OC_PWM_EDGE_ALIGN ,0,0x0,0x0);
+
+    #elif defined(__PIC24FJ64GB004__)
 	//On the PIC24FJ64GB004 Family of USB microcontrollers, the PLL will not power up and be enabled
 	//by default, even if a PLL enabled oscillator configuration is selected (such as HS+PLL).
 	//This allows the device to power up at a lower initial operating frequency, which can be
@@ -243,6 +263,39 @@ BOOL InitializeSystem ( void )
         CLKDIVbits.PLLEN = 1;
         while(pll_startup_counter--);
     }
+   #elif defined(__PIC24FJ64GB002__)
+        //On the PIC24FJ64GB004 Family of USB microcontrollers, the PLL will not power up and be enabled
+        //by default, even if a PLL enabled oscillator configuration is selected (such as HS+PLL).
+        //This allows the device to power up at a lower initial operating frequency, which can be
+        //advantageous when powered from a source which is not gauranteed to be adequate for 32MHz
+        //operation.  On these devices, user firmware needs to manually set the CLKDIV<PLLEN> bit to
+	//power up the PLL.
+    {
+        unsigned int pll_startup_counter = 600;
+        CLKDIVbits.PLLEN = 1;
+        while(pll_startup_counter--);
+    }
+
+        CLKDIV = 0x0000;    // Set PLL prescaler (1:1)
+	AD1PCFG = 0xffff;
+
+        // Configure U2RX - put on pin 17 (RP8)
+        RPINR19bits.U2RXR = 8;
+        // Configure U2TX - put on pin 16 (RP7)
+        RPOR3bits.RP7R = 5;
+
+	// OC 1
+	PPSOutput(PPS_RP14, PPS_OC1);
+	// OC 2
+	PPSOutput(PPS_RP15, PPS_OC2);
+
+	mPORTAOutputConfig(0x1f);
+
+	mPORTAWrite(0x0);
+
+        OpenTimer2(T2_ON | T2_PS_1_8 ,0xffff); //Timer is configured for 10 msec
+	OpenOC1(OC_IDLE_CON | OC_TIMER2_SRC | OC_PWM_EDGE_ALIGN ,OC_SYNC_TRIG_IN_TMR2,0,0);
+	OpenOC2(OC_IDLE_CON | OC_TIMER2_SRC | OC_PWM_EDGE_ALIGN ,OC_SYNC_TRIG_IN_TMR2,0,0);
 
     #elif defined(__PIC32MX__)
         {
@@ -442,7 +495,7 @@ BOOL USB_ApplicationEventHandler ( BYTE address, USB_EVENT event, void *data, DW
     #endif
 
     // Handle specific events.
-    switch (event)
+    switch ((int)event)
     {
         case EVENT_GENERIC_ATTACH:
             if (size == sizeof(GENERIC_DEVICE_ID))
@@ -560,15 +613,6 @@ BOOL USB_ApplicationEventHandler ( BYTE address, USB_EVENT event, void *data, DW
 
 } // USB_ApplicationEventHandler
 
-void __attribute__ ((interrupt,no_auto_psv)) _OC1Interrupt(void)
-{
-   OC1_Clear_Intr_Status_Bit;
-}
-void __attribute__ ((interrupt,no_auto_psv)) _OC2Interrupt(void)
-{
-   OC2_Clear_Intr_Status_Bit;
-}
-
 //******************************************************************************
 //******************************************************************************
 // Main
@@ -613,26 +657,11 @@ int main ( void )
 	btClientData.State = BT_STATE_IDLE;
 	btClientData.Initialized = FALSE;
 
-//	mPORTDOutputConfig(0x03);
-	mPORTEOutputConfig(0x1f);
-
-//	mPORTDWrite(0x03);
-	mPORTEWrite(0x10);
-
-   //Enable Interrupt
-   SetPriorityIntOC1(4);
-   EnableIntOC1;
-   SetPriorityIntOC2(4);
-   EnableIntOC2;
-
-	mPORTDOutputConfig(0x03);
-
-	OpenTimer2(T2_ON | T2_PS_1_8 ,0xffff); //Timer is configured for 10 msec
-	OpenOC1(OC_IDLE_CON | OC_PWM_FAULT_CLEAR | OC_TIMER2_SRC | OC_PWM_EDGE_ALIGN ,0,0x0,0x0);
-	OpenOC2(OC_IDLE_CON | OC_PWM_FAULT_CLEAR | OC_TIMER2_SRC | OC_PWM_EDGE_ALIGN ,0,0x0,0x0);
-
-//	SetDCOC1PWM((PWM_PERIOD/10)*2,0);
-//	SetDCOC2PWM((PWM_PERIOD/10)*2,0);
+	//Enable Interrupt
+	SetPriorityIntOC1(4);
+	EnableIntOC1;
+	SetPriorityIntOC2(4);
+	EnableIntOC2;
 
     // Main Processing Loop
     while (1)

@@ -364,7 +364,7 @@ HOLDING state machine values
     #define USB_INSERT_TIME                 (250+1) // Insertion delay time (spec minimum is 100 ms)
 #endif
 #define USB_RESET_TIME                      (50+1)  // RESET signaling time - 50ms
-#if defined( __C30__ )
+#if defined( __C30__ ) || defined __XC16__
     #define USB_RESET_RECOVERY_TIME         (10+1)  // RESET recovery time.
 #elif defined( __PIC32MX__ )
     #define USB_RESET_RECOVERY_TIME         (100+1) // RESET recovery time - Changed to 100 ms from 10ms.  Some devices take longer.
@@ -514,6 +514,7 @@ typedef struct _USB_DEVICE_INFO
     BYTE                deviceAddress;                      // Device address.
     BYTE                errorCode;                          // Error code of last operation.
     BYTE                deviceClientDriver;                 // Index of client driver for this device if bfUseDeviceClientDriver=1.
+    BYTE                deviceEP0Driver;                    // Index of EP0 driver for this device if bfUseEP0Driver=1.
     WORD                currentConfigurationPower;          // Max power in milli-amps.
 
     USB_CONFIGURATION   *pConfigurationDescriptorList;      // Pointer to the list of Cnfiguration Descriptors of the attached device.
@@ -531,6 +532,7 @@ typedef struct _USB_DEVICE_INFO
             BYTE        bfPingPongIn                : 1;    // Ping-pong status of IN buffers (default = 0).
             BYTE        bfPingPongOut               : 1;    // Ping-pong status of OUT buffers (default = 0).
             BYTE        bfUseDeviceClientDriver     : 1;    // Indicates driver should use a single client driver (deviceClientDriver)
+            BYTE        bfUseEP0Driver              : 1;
         };
         WORD            val;
     }                   flags;

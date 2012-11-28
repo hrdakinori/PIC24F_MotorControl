@@ -46,7 +46,6 @@ BUT NOT LIMITED TO ANY DEFENSE THEREOF), OR OTHER SIMILAR COSTS.
 ********************************************************************************
 */
 
-#include <stdarg.h>
 #include "Compiler.h"
 #include "HardwareProfile.h"
 #include "uart2.h"
@@ -58,7 +57,11 @@ BUT NOT LIMITED TO ANY DEFENSE THEREOF), OR OTHER SIMILAR COSTS.
 //U2BRG register value and baudrate mistake calculation
 
 #if defined (__C30__)
+    #if defined (__dsPIC33E__) || defined (__PIC24E__)
+    #define BAUDRATEREG2        (((GetPeripheralClock())/(BRG_DIV2 * BAUDRATE2)) - 1)
+    #else
     #define BAUDRATEREG2        (((GetSystemClock()/2)+(BRG_DIV2/2*BAUDRATE2))/BRG_DIV2/BAUDRATE2-1)
+    #endif
 #elif defined (__PIC32MX__)
     #define BAUDRATEREG2        ((GetPeripheralClock()+(BRG_DIV2/2*BAUDRATE2))/BRG_DIV2/BAUDRATE2-1)
 #else
@@ -66,13 +69,16 @@ BUT NOT LIMITED TO ANY DEFENSE THEREOF), OR OTHER SIMILAR COSTS.
 #endif    
 
 #if defined (__C30__)
+    #if defined (__dsPIC33E__)|| defined (__PIC24E__)
+    #define BAUD_ACTUAL         ((GetPeripheralClock())/(BRG_DIV2 * (BAUDRATEREG2+1)))
+    #else
     #define BAUD_ACTUAL         ((GetSystemClock()/2)/BRG_DIV2/(BAUDRATEREG2+1))
+    #endif
 #elif defined (__PIC32MX__)
     #define BAUD_ACTUAL         (GetPeripheralClock()/BRG_DIV2/(BAUDRATEREG2+1))
 #else
     #error Cannot calculate actual baud rate
-#endif    
-
+#endif 
 
 	#define BAUD_ERROR              ((BAUD_ACTUAL > BAUDRATE2) ? BAUD_ACTUAL-BAUDRATE2 : BAUDRATE2-BAUD_ACTUAL)
 	#define BAUD_ERROR_PERCENT      ((BAUD_ERROR*100+BAUDRATE2/2)/BAUDRATE2)
@@ -190,21 +196,6 @@ char UART2IsPressed()
     return 0;
 }
 
-void UART2Printf(char *format, ...)
-{
-	char buf[100];
-
-	memset(buf,0,100);
-
-    va_list argptr;
-
-    va_start(argptr, format);
-    vsprintf(buf, format, argptr);
-    va_end(argptr);
-
-	UART2PrintString(buf);
-}
-
 /*******************************************************************************
 Function: UART2PrintString( char *str )
 
@@ -246,6 +237,7 @@ void UART2PutChar( char ch )
 {
     U2TXREG = ch;
     #if !defined(__PIC32MX__)
+        Nop();
         Nop();
     #endif
     while(U2STAbits.TRMT == 0);

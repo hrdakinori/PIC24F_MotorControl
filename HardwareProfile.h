@@ -8,11 +8,17 @@
 
 //#define USE_USB_PLL
 
-#if defined (__C30__)
+#if defined (__C30__) || defined __XC16__
+    #if defined (__dsPIC33EP512MU810__)||defined(__PIC24EP512GU810__)
+        #define GetSystemClock()            40000000UL
+        #define GetPeripheralClock()        (GetSystemClock())
+        #define GetInstructionClock()       (GetSystemClock() / 2)
+    #else
     // Various clock values
-    #define GetSystemClock()            32000000UL
-    #define GetPeripheralClock()        (GetSystemClock())
-    #define GetInstructionClock()       (GetSystemClock() / 2)
+        #define GetSystemClock()            32000000UL
+        #define GetPeripheralClock()        (GetSystemClock())
+        #define GetInstructionClock()       (GetSystemClock() / 2)
+    #endif
 #elif defined( __PIC32MX__)
     //#define USB_A0_SILICON_WORK_AROUND
     //#define RUN_AT_48MHZ
@@ -46,6 +52,14 @@
 
 #if defined(__PIC24F__) || defined(__PIC24H__)
     #include <p24fxxxx.h>
+    #include <uart2.h>
+#elif defined (__dsPIC33EP512MU810__)
+#elif defined(__dsPIC33EP512MU810__)
+    #include <p33Exxxx.h>
+    #include <p33Exxxx.h>
+    #include <uart2.h>
+#elif defined (__PIC24EP512GU810__)
+    #include <p24Exxxx.h>
     #include <uart2.h>
 #else
     #include <p32xxxx.h>

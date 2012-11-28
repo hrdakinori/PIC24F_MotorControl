@@ -166,8 +166,11 @@ err_t rfcomm_disconnected(void *arg, struct rfcomm_pcb *pcb, err_t err)
 	}
 	rfcomm_close(pcb);
 
-	SetDCOC1PWM(0,0);
-	SetDCOC2PWM(0,0);
+#if defined(__PIC24FJ64GB002__)
+	mPORTAWrite(0);
+#elif defined(__PIC24FJ256GB106__)
+	mPORTEWrite(0);
+#endif
 
 	return ret;
 }
@@ -201,9 +204,17 @@ err_t l2cap_disconnected_ind(void *arg, struct l2cap_pcb *pcb, err_t err)
 	return ret;
 }
 
+void __attribute__ ((interrupt,no_auto_psv)) _OC1Interrupt(void)
+{
+  OC1_Clear_Intr_Status_Bit;
+}
+void __attribute__ ((interrupt,no_auto_psv)) _OC2Interrupt(void)
+{
+  OC2_Clear_Intr_Status_Bit;
+}
+
 err_t spp_recv(void *arg, struct rfcomm_pcb *pcb, struct pbuf *p, err_t err)
 {
-	u8_t *data = p->payload;
 	struct pbuf *q = NULL;
 	char cm1[3];
 	char cm2[3];
@@ -216,9 +227,13 @@ err_t spp_recv(void *arg, struct rfcomm_pcb *pcb, struct pbuf *p, err_t err)
 	LWIP_DEBUGF(BT_SPP_DEBUG, ("spp_recv: p->len == %d p->tot_len == %d\n", p->len, p->tot_len));
 
 	q = pbuf_alloc(PBUF_RAW, p->tot_len, PBUF_RAM);
+
 	if(p->tot_len != 0)
 	{
-		((u8_t*)q->payload)[0] = *((u8_t *)p->payload);
+		u8_t *data = p->payload;
+
+		*((u8_t*)q->payload) = *((u8_t *)p->payload);
+
 		if(*data == 'm')
 		{
 			m = 0x10;
@@ -255,31 +270,71 @@ err_t spp_recv(void *arg, struct rfcomm_pcb *pcb, struct pbuf *p, err_t err)
 			SetDCOC1PWM((0xffff/10)*m1,0);
 			SetDCOC2PWM((0xffff/10)*m2,0);
 
+#if defined(__PIC24FJ64GB002__)
+			mPORTAWrite(m);
+#elif defined(__PIC24FJ256GB106__)
 			mPORTEWrite(m);
+#endif
 		}else{
 			if(*data == 'a')
 			{
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x1f);
+#endif
 				DelayMs(3);
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x15);
+#endif
 			}else if(*data == 's')
 			{
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x1f);
+#endif
 				DelayMs(3);
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x1a);
+#endif
 			}else if(*data == 'd')
 			{
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x1f);
+#endif
 				DelayMs(3);
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x19);
+#endif
 			}else if(*data == 'f')
 			{
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x1f);
+#endif
 				DelayMs(3);
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x16);
+#endif
 			}else if(*data == 'g')
 			{
+#if defined(__PIC24FJ64GB002__)
+
+#elif defined(__PIC24FJ256GB106__)
 				mPORTEWrite(0x10);
+#endif
 			}else{
 			}
 		}

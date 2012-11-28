@@ -266,9 +266,14 @@ typedef struct _USB_TPL
         BYTE         val;                       //
         struct
         {
-            BYTE     bfAllowHNP      : 1;       // Is HNP allowed?
-            BYTE     bfIsClassDriver : 1;       // Client driver is a class-level driver
-            BYTE     bfSetConfiguration : 1;    // bConfiguration is valid
+            BYTE     bfAllowHNP             :1;     // Is HNP allowed?
+            BYTE     bfIsClassDriver        :1;     // Client driver is a class-level driver
+            BYTE     bfSetConfiguration     :1;     // bConfiguration is valid
+            BYTE     bfIgnoreProtocol       :1;
+            BYTE     bfIgnoreSubClass       :1;
+            BYTE     bfIgnoreClass          :1;
+            BYTE     bfIgnorePID            :1;
+            BYTE     bfEP0OnlyCustomDriver  :1;
         };
     } flags;                                    //
 } USB_TPL;
@@ -278,9 +283,14 @@ typedef struct _USB_TPL
 #define INIT_CL_SC_P(c,s,p) {((c)|((s)<<8)|((p)<<16))}  // Set class support in the TPL (non-OTG only).
 
 // Section: TPL Flags
-#define TPL_ALLOW_HNP   0x01                    // Bitmask for Host Negotiation Protocol.
-#define TPL_CLASS_DRV   0x02                    // Bitmask for class driver support.
-#define TPL_SET_CONFIG  0x04                    // Bitmask for setting the configuration.
+#define TPL_ALLOW_HNP               0x01                    // Bitmask for Host Negotiation Protocol.
+#define TPL_CLASS_DRV               0x02                    // Bitmask for class driver support.
+#define TPL_SET_CONFIG              0x04                    // Bitmask for setting the configuration.
+#define TPL_IGNORE_PROTOCOL         0x08                    // Bitmask for ignoring the protocol of a CL/SC/P driver
+#define TPL_IGNORE_SUBCLASS         0x10                    // Bitmask for ignoring the subclass of a CL/SC/P driver
+#define TPL_IGNORE_CLASS            0x20                    // Bitmask for ignoring the class of a CL/SC/P driver
+#define TPL_IGNORE_PID              0x40                    // Bitmask for ignoring the PID of a VID/PID driver
+#define TPL_EP0_ONLY_CUSTOM_DRIVER  0x80                    // Bitmask to let a custom driver gain EP0 only and allow other interfaces to use standard drivers
 
 
 // *****************************************************************************
@@ -415,7 +425,7 @@ typedef BOOL (*USB_CLIENT_INIT)   ( BYTE address, DWORD flags, BYTE clientDriver
 #else
     // If the application does not provide an event handler, then we will
     // assume that all events function without error.
-    #define USB_HOST_APP_EVENT_HANDLER(a,e,d,s) TRUE
+    #define USB_HOST_APP_EVENT_HANDLER(a,e,d,s) ((e==EVENT_OVERRIDE_CLIENT_DRIVER_SELECTION)?FALSE:TRUE)
 #endif
 
 
@@ -619,6 +629,7 @@ BOOL    USBHostDeviceSpecificClientDriver( BYTE deviceAddress );
     USB_HOLDING_PROCESSING_CAPACITY     - Processing requirement excessive
     USB_HOLDING_POWER_REQUIREMENT       - Power requirement excessive
     USB_HOLDING_CLIENT_INIT_ERROR       - Client driver failed to initialize
+    USB_DEVICE_SUSPENDED                - Device is suspended
     Other                               - Device is holding in an error
                                             state. The return value
                                             indicates the error.

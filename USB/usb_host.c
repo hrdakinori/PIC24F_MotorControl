@@ -31,7 +31,7 @@ USB_INTERRUPT_T1MSECIF equals 0x40.
 Software License Agreement
 
 The software supplied herewith by Microchip Technology Incorporated
-(the ìCompanyÅE for its PICmicroÆ Microcontroller is intended and
+(the ìCompanyî) for its PICmicroÆ Microcontroller is intended and
 supplied to you, the Companyís customer, for use solely and
 exclusively on Microchip PICmicro Microcontroller products. The
 software is owned by the Company and/or its supplier, and is
@@ -41,7 +41,7 @@ user to criminal sanctions under applicable laws, as well as to
 civil liability for the breach of the terms and conditions of this
 license.
 
-THIS SOFTWARE IS PROVIDED IN AN ìAS ISÅECONDITION. NO WARRANTIES,
+THIS SOFTWARE IS PROVIDED IN AN ìAS ISî CONDITION. NO WARRANTIES,
 WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING, BUT NOT LIMITED
 TO, IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
 PARTICULAR PURPOSE APPLY TO THIS SOFTWARE. THE COMPANY SHALL NOT,
@@ -65,6 +65,9 @@ Change History:
               Fixed an error where device may never be able to enumerate if it
               is already attached when the host stack initializes.
 
+  2.9d        Fixed PIC32 USB register mapping to be more universal
+              Fixed a race condition between 1msec timer and USB device stack
+
 *******************************************************************************/
 
 #include <stdlib.h>
@@ -75,6 +78,7 @@ Change History:
 #include "usb_hal_local.h"
 #include "HardwareProfile.h"
 //#include "USB/usb_hal.h"
+#include <debug.h>
 
 #ifndef USB_MALLOC
     #define USB_MALLOC(size) malloc(size)
@@ -92,11 +96,6 @@ Change History:
 
 // *****************************************************************************
 // Low Level Functionality Configurations.
-
-//#define DEBUG_MODE
-#ifdef DEBUG_MODE
-    #include "uart2.h"
-#endif
 
 // If the TPL includes an entry specifying a VID of 0xFFFF and a PID of 0xFFFF,
 // the specified client driver will be used for any device that attaches.  This
@@ -181,7 +180,6 @@ volatile WORD                 usbOverrideHostState;                       // Nex
     static WORD prevHostState;
 #endif
 
-
 static USB_BUS_INFO                  usbBusInfo;                                 // Information about the USB bus.
 static USB_DEVICE_INFO               usbDeviceInfo;                              // A collection of information about the attached device.
 #if defined( USB_ENABLE_TRANSFER_EVENT )
@@ -189,7 +187,7 @@ static USB_DEVICE_INFO               usbDeviceInfo;                             
 #endif
 static USB_ROOT_HUB_INFO             usbRootHubInfo;                             // Information about a specific port.
 
-
+static volatile WORD msec_count = 0;                                             // The current millisecond count.
 
 // *****************************************************************************
 // *****************************************************************************
@@ -312,7 +310,7 @@ BOOL    USBHostDeviceSpecificClientDriver( BYTE deviceAddress )
     This function returns the current status of a device.  If the device is
     in a holding state due to an error, the error is returned.
 
-  Preconditions:
+  Precondition:
     None
 
   Parameters:
@@ -405,10 +403,7 @@ BOOL USBHostInit(  unsigned long flags  )
     {
         if ((usbDeviceInfo.pEndpoint0 = (USB_ENDPOINT_INFO*)USB_MALLOC( sizeof(USB_ENDPOINT_INFO) )) == NULL)
         {
-            #ifdef DEBUG_MODE
-                UART2PrintString( "HOST: Cannot allocate for endpoint 0.\r\n" );
-            #endif
-            //return USB_MEMORY_ALLOCATION_ERROR;
+            DEBUG_PutString( "HOST: Cannot allocate for endpoint 0.\r\n" );
             return FALSE;
         }
         usbDeviceInfo.pEndpoint0->next = NULL;
@@ -437,9 +432,9 @@ BOOL USBHostInit(  unsigned long flags  )
 
 /****************************************************************************
   Function:
-    BOOL USBHostIsochronousBuffersCreate( ISOCHRONOUS_DATA * isocData,
+    BOOL USBHostIsochronousBuffersCreate( ISOCHRONOUS_DATA * isocData, 
             BYTE numberOfBuffers, WORD bufferSize )
-
+    
   Description:
     This function initializes the isochronous data buffer information and
     allocates memory for each buffer.  This function will not allocate memory
@@ -453,7 +448,7 @@ BOOL USBHostInit(  unsigned long flags  )
 
   Return Values:
     TRUE    - All buffers are allocated successfully.
-    FALSE   - Not enough heap space to allocate all buffers - adjust the
+    FALSE   - Not enough heap space to allocate all buffers - adjust the 
                 project to provide more heap space.
 
   Remarks:
@@ -475,9 +470,7 @@ BOOL USBHostIsochronousBuffersCreate( ISOCHRONOUS_DATA * isocData, BYTE numberOf
             isocData->buffers[i].pBuffer = USB_MALLOC( bufferSize );
             if (isocData->buffers[i].pBuffer == NULL)
             {
-                #ifdef DEBUG_MODE
-                    UART2PrintString( "HOST:  Not enough memory for isoc buffers.\r\n" );
-                #endif
+                DEBUG_PutString( "HOST:  Not enough memory for isoc buffers.\r\n" );
     
                 // Release all previous buffers.
                 for (j=0; j<i; j++)
@@ -496,7 +489,7 @@ BOOL USBHostIsochronousBuffersCreate( ISOCHRONOUS_DATA * isocData, BYTE numberOf
 /****************************************************************************
   Function:
     void USBHostIsochronousBuffersDestroy( ISOCHRONOUS_DATA * isocData, BYTE numberOfBuffers )
-
+    
   Description:
     This function releases all of the memory allocated for the isochronous
     data buffers.  It also resets all other information about the buffers.
@@ -536,9 +529,9 @@ void USBHostIsochronousBuffersDestroy( ISOCHRONOUS_DATA * isocData, BYTE numberO
 /****************************************************************************
   Function:
     void USBHostIsochronousBuffersReset( ISOCHRONOUS_DATA * isocData, BYTE numberOfBuffers )
-
+    
   Description:
-    This function resets all the isochronous data buffers.  It does not do
+    This function resets all the isochronous data buffers.  It does not do 
     anything with the space allocated for the buffers.
 
   Precondition:
@@ -592,11 +585,9 @@ void USBHostIsochronousBuffersReset( ISOCHRONOUS_DATA * isocData, BYTE numberOfB
     This function does no special processing in regards to the request except
     for three requests.  If SET INTERFACE is sent, then DTS is reset for all
     endpoints.  If CLEAR FEATURE (ENDPOINT HALT) is sent, then DTS is reset
-    for that endpoint.
-
-    If the application wishes to change the device configuration, it should
-    use the function USBHostSetDeviceConfiguration() rather than this function
-    with the SET CONFIGURATION request, since endpoint definitions may
+    for that endpoint.  If SET CONFIGURATION is sent, the request is aborted
+    with a failure.  The function USBHostSetDeviceConfiguration() must be
+    called to change the device configuration, since endpoint definitions may
     change.
 
   Precondition:
@@ -1164,10 +1155,17 @@ void USBHostShutdown( void )
 
             powerRequest.port = 0;  // Currently was have only one port.
 
-            USB_HOST_APP_EVENT_HANDLER( usbDeviceInfo.deviceAddress, EVENT_VBUS_RELEASE_POWER,
-                &powerRequest, sizeof(USB_VBUS_POWER_EVENT_DATA) );
-            _USB_NotifyClients(usbDeviceInfo.deviceAddress, EVENT_DETACH,
-                &usbDeviceInfo.deviceAddress, sizeof(BYTE) );
+            USB_HOST_APP_EVENT_HANDLER( usbDeviceInfo.deviceAddress,
+                                        EVENT_VBUS_RELEASE_POWER,
+                                        &powerRequest,
+                                        sizeof(USB_VBUS_POWER_EVENT_DATA)
+                                      );
+            
+            _USB_NotifyClients( usbDeviceInfo.deviceAddress,
+                                EVENT_DETACH,
+                                &usbDeviceInfo.deviceAddress,
+                                sizeof(BYTE)
+                              );
 
 
         }
@@ -1270,15 +1268,6 @@ void USBHostTasks( void )
     BYTE                        temp;
     USB_VBUS_POWER_EVENT_DATA   powerRequest;
 
-    #ifdef DEBUG_MODE
-//        UART2PutChar('<');
-//        UART2PutHex( usbHostState>>8 );
-//        UART2PutHex( usbHostState & 0xff );
-//        UART2PutChar('-');
-//        UART2PutHex( pCurrentEndpoint->transferState );
-//        UART2PutChar('>');
-    #endif
-
     // The PIC32MX detach interrupt is not reliable.  If we are not in one of
     // the detached states, we'll do a check here to see if we've detached.
     // If the ATTACH bit is 0, we have detached.
@@ -1286,10 +1275,9 @@ void USBHostTasks( void )
         #ifdef USE_MANUAL_DETACH_DETECT
             if (((usbHostState & STATE_MASK) != STATE_DETACHED) && !U1IRbits.ATTACHIF)
             {
-                #ifdef DEBUG_MODE
-                    UART2PutChar( '>' );
-                    UART2PutChar( ']' );
-                #endif
+                DEBUG_PutChar( '>' );
+                DEBUG_PutChar( ']' );
+
                 usbHostState = STATE_DETACHED;
             }
         #endif
@@ -1299,7 +1287,7 @@ void USBHostTasks( void )
     #if defined ( USB_ENABLE_TRANSFER_EVENT )
     {
         USB_EVENT_DATA *item;
-        #if defined( __C30__ )
+        #if defined( __C30__ ) || defined __XC16__
             WORD        interrupt_mask;
         #elif defined( __PIC32MX__ )
             UINT32      interrupt_mask;
@@ -1336,9 +1324,8 @@ void USBHostTasks( void )
     // See if we got an interrupt to change our state.
     if (usbOverrideHostState != NO_STATE)
     {
-        #ifdef DEBUG_MODE
-            UART2PutChar('>');
-        #endif
+        DEBUG_PutChar('>');
+
         usbHostState = usbOverrideHostState;
         usbOverrideHostState = NO_STATE;
     }
@@ -1358,9 +1345,7 @@ void USBHostTasks( void )
                     // Turn off the module and free up memory.
                     USBHostShutdown();
 
-                    #ifdef DEBUG_MODE
-                        UART2PrintString( "HOST: Initializing DETACHED state.\r\n" );
-                    #endif
+                    DEBUG_PutString( "HOST: Initializing DETACHED state.\r\n" );
 
                     // Initialize Endpoint 0 attributes.
                     usbDeviceInfo.pEndpoint0->next                         = NULL;
@@ -1394,7 +1379,7 @@ void USBHostTasks( void )
                     U1EIR               = 0xFF;
 
                     // Initialize the Buffer Descriptor Table pointer.
-                    #if defined(__C30__)
+                    #if defined(__C30__) || defined __XC16__
                        U1BDTP1 = (WORD)(&BDT) >> 8;
                     #elif defined(__PIC32MX__)
                        U1BDTP1 = ((DWORD)KVA_TO_PA(&BDT) & 0x0000FF00) >> 8;
@@ -1419,7 +1404,7 @@ void USBHostTasks( void )
                     #endif
 
                     U1CNFG1             = USB_PING_PONG_MODE;
-                    #if defined(__C30__)
+                    #if defined(__C30__) || defined __XC16__
                         U1CNFG2         = USB_VBUS_BOOST_ENABLE | USB_VBUS_COMPARE_ENABLE | USB_ONCHIP_ENABLE;
                     #endif
                     U1ADDR              = 0;                        // Set default address and LSPDEN to 0
@@ -1449,17 +1434,24 @@ void USBHostTasks( void )
                         // Power on the module
                         U1PWRC                = USB_NORMAL_OPERATION | USB_ENABLED;
 
-                        #if defined( __C30__ )
+                        #if defined( __C30__ ) || defined __XC16__
                             IFS5            &= 0xFFBF;
                             IPC21           &= 0xF0FF;
                             IPC21           |= 0x0600;
                             IEC5            |= 0x0040;
                         #elif defined( __PIC32MX__ )
                             // Enable the USB interrupt.
-                            IFS1CLR         = 0x02000000;
-                            IPC11CLR        = 0x0000FF00;
-                            IPC11SET        = 0x00001000;
-                            IEC1SET         = 0x02000000;
+                            IFS1CLR         = _IFS1_USBIF_MASK;
+                            #if defined(_IPC11_USBIP_MASK)
+                                IPC11CLR        = _IPC11_USBIP_MASK | _IPC11_USBIS_MASK;
+                                IPC11SET        = _IPC11_USBIP_MASK & (0x00000004 << _IPC11_USBIP_POSITION);
+                            #elif defined(_IPC7_USBIP_MASK)
+                                IPC7CLR        = _IPC7_USBIP_MASK | _IPC7_USBIS_MASK;
+                                IPC7SET        = _IPC7_USBIP_MASK & (0x00000004 << _IPC7_USBIP_POSITION);
+                            #else
+                                #error "The selected PIC32 device is not currently supported by usb_host.c."
+                            #endif
+                            IEC1SET         = _IEC1_USBIE_MASK;                        
                         #else
                             #error Cannot enable USB interrupt.
                         #endif
@@ -1470,6 +1462,11 @@ void USBHostTasks( void )
 
                         // Enable the ATTACH interrupt.
                         U1IEbits.ATTACHIE = 1;
+
+                        #if defined(USB_ENABLE_1MS_EVENT)
+                            U1OTGIR                 = USB_INTERRUPT_T1MSECIF; // The interrupt is cleared by writing a '1' to the flag.
+                            U1OTGIEbits.T1MSECIE    = 1;
+                        #endif
                     }
                     else
                     {
@@ -1496,9 +1493,7 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_START_SETTLING_DELAY:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Starting settling delay.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Starting settling delay.\r\n" );
 
                             // Clear and turn on the DETACH interrupt.
                             U1IR                    = USB_INTERRUPT_DETACH;   // The interrupt is cleared by writing a '1' to the flag.
@@ -1530,9 +1525,7 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_SET_RESET:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Resetting the device.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Resetting the device.\r\n" );
 
                             // Prepare a data buffer for us to use.  We'll make it 8 bytes for now,
                             // which is the minimum wMaxPacketSize for EP0.
@@ -1540,11 +1533,11 @@ void USBHostTasks( void )
                             {
                                 USB_FREE_AND_CLEAR( pEP0Data );
                             }
+
                             if ((pEP0Data = (BYTE *)USB_MALLOC( 8 )) == NULL)
                             {
-                                #ifdef DEBUG_MODE
-                                    UART2PrintString( "HOST: Error alloc-ing pEP0Data\r\n" );
-                                #endif
+                                DEBUG_PutString( "HOST: Error alloc-ing pEP0Data\r\n" );
+
                                 _USB_SetErrorCode( USB_HOLDING_OUT_OF_MEMORY );
                                 _USB_SetHoldState();
                                 break;
@@ -1578,9 +1571,8 @@ void USBHostTasks( void )
                             // See if the device is low speed.
                             if (!U1CONbits.JSTATE)
                             {
-                                #ifdef DEBUG_MODE
-                                    UART2PrintString( "HOST: Low Speed!\r\n" );
-                                #endif
+                                DEBUG_PutString( "HOST: Low Speed!\r\n" );
+
                                 usbDeviceInfo.flags.bfIsLowSpeed    = 1;
                                 usbDeviceInfo.deviceAddressAndSpeed = 0x80;
                                 U1ADDR                              = 0x80;
@@ -1614,9 +1606,7 @@ void USBHostTasks( void )
                             break;
 
                         case SUBSUBSTATE_RESET_RECOVERY:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Reset complete.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Reset complete.\r\n" );
 
                             // Deassert reset.
                             U1CONbits.USBRST        = 0;
@@ -1637,9 +1627,7 @@ void USBHostTasks( void )
                             break;
 
                         case SUBSUBSTATE_RESET_COMPLETE:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Reset complete.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Reset complete.\r\n" );
 
                             // Enable USB interrupts
                             U1IE                    = USB_INTERRUPT_TRANSFER | USB_INTERRUPT_SOF | USB_INTERRUPT_ERROR | USB_INTERRUPT_DETACH;
@@ -1662,9 +1650,7 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_SEND_GET_DEVICE_DESCRIPTOR_SIZE:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Getting Device Descriptor size.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Getting Device Descriptor size.\r\n" );
 
                             // Set up and send GET DEVICE DESCRIPTOR
                             if (pDeviceDescriptor != NULL)
@@ -1735,9 +1721,8 @@ void USBHostTasks( void )
                             if ((pEP0Data = (BYTE *)USB_MALLOC( usbDeviceInfo.pEndpoint0->wMaxPacketSize )) == NULL)
                             {
                                 // We cannot continue.  Freeze until the device is removed.
-                                #ifdef DEBUG_MODE
-                                    UART2PrintString( "HOST: Error re-alloc-ing pEP0Data\r\n" );
-                                #endif
+                                DEBUG_PutString( "HOST: Error re-alloc-ing pEP0Data\r\n" );
+
                                 _USB_SetErrorCode( USB_HOLDING_OUT_OF_MEMORY );
                                 _USB_SetHoldState();
                                 break;
@@ -1758,9 +1743,7 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_SEND_GET_DEVICE_DESCRIPTOR:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Getting device descriptor.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Getting device descriptor.\r\n" );
 
                             // If we are currently sending a token, we cannot do anything.
                             if (usbBusInfo.flags.bfTokenAlreadyWritten)   //(U1CONbits.TOKBUSY)
@@ -1808,9 +1791,7 @@ void USBHostTasks( void )
                     break;
 
                 case SUBSTATE_VALIDATE_VID_PID:
-                    #ifdef DEBUG_MODE
-                        UART2PrintString( "HOST: Validating VID and PID.\r\n" );
-                    #endif
+                    DEBUG_PutString( "HOST: Validating VID and PID.\r\n" );
 
                     // Search the TPL for the device's VID & PID.  If a client driver is
                     // available for the over-all device, use it.  Otherwise, we'll search
@@ -1835,9 +1816,7 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_SEND_SET_DEVICE_ADDRESS:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Setting device address.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Setting device address.\r\n" );
 
                             // Select an address for the device.  Store it so we can access it again
                             // easily.  We'll put the low speed indicator on later.
@@ -1915,14 +1894,15 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_SEND_GET_CONFIG_DESCRIPTOR_SIZE:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Getting Config Descriptor size.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Getting Config Descriptor size.\r\n" );
 
                             // Set up and send GET CONFIGURATION (n) DESCRIPTOR with a length of 8
                             pEP0Data[0] = USB_SETUP_DEVICE_TO_HOST | USB_SETUP_TYPE_STANDARD | USB_SETUP_RECIPIENT_DEVICE;
                             pEP0Data[1] = USB_REQUEST_GET_DESCRIPTOR;
-                            pEP0Data[2] = countConfigurations-1;    // USB 2.0 - range is 0 - count-1
+
+                            //MCHP: probably should get all of the configuration descriptors.
+                            pEP0Data[2] = 0;
+//                            pEP0Data[2] = countConfigurations-1;    // USB 2.0 - range is 0 - count-1
                             pEP0Data[3] = USB_DESCRIPTOR_CONFIGURATION;
                             pEP0Data[4] = 0;
                             pEP0Data[5] = 0;
@@ -1998,14 +1978,13 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_SEND_GET_CONFIG_DESCRIPTOR:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Getting Config Descriptor.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Getting Config Descriptor.\r\n" );
 
                             // Set up and send GET CONFIGURATION (n) DESCRIPTOR.
                             pEP0Data[0] = USB_SETUP_DEVICE_TO_HOST | USB_SETUP_TYPE_STANDARD | USB_SETUP_RECIPIENT_DEVICE;
                             pEP0Data[1] = USB_REQUEST_GET_DESCRIPTOR;
-                            pEP0Data[2] = countConfigurations-1;
+                            //MCHP: probably should get all of the configuration descriptors.
+                            pEP0Data[2] = 0;
                             pEP0Data[3] = USB_DESCRIPTOR_CONFIGURATION;
                             pEP0Data[4] = 0;
                             pEP0Data[5] = 0;
@@ -2122,18 +2101,15 @@ void USBHostTasks( void )
                             break;
 
                         case SUBSUBSTATE_SEND_SET_OTG:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Determine OTG capability.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Determine OTG capability.\r\n" );
 
                             // If the device does not support OTG, or
                             // if the device has already been configured, bail.
                             // Otherwise, send SET FEATURE to configure it.
                             if (!usbDeviceInfo.flags.bfConfiguredOTG)
                             {
-                                #ifdef DEBUG_MODE
-                                    UART2PrintString( "HOST: ...OTG needs configuring.\r\n" );
-                                #endif
+                                DEBUG_PutString( "HOST: ...OTG needs configuring.\r\n" );
+
                                 usbDeviceInfo.flags.bfConfiguredOTG = 1;
 
                                 // Send SET FEATURE
@@ -2157,9 +2133,8 @@ void USBHostTasks( void )
                             }
                             else
                             {
-                                #ifdef DEBUG_MODE
-                                    UART2PrintString( "HOST: ...No OTG.\r\n" );
-                                #endif
+                                DEBUG_PutString( "HOST: ...No OTG.\r\n" );
+
                                 _USB_SetNextSubState();
                             }
                             break;
@@ -2187,9 +2162,10 @@ void USBHostTasks( void )
                                     // enumerate again.
                                     _USB_CheckCommandAndEnumerationAttempts();
 
-                                    #if defined(DEBUG_MODE) && defined(USB_SUPPORT_OTG)
-                                        UART2PrintString( "\r\n***** USB OTG Error - Set Feature B_HNP_ENABLE Stalled - Device Not Responding *****\r\n" );
+                                    #if defined(USB_SUPPORT_OTG)
+                                        DEBUG_PutString( "\r\n***** USB OTG Error - Set Feature B_HNP_ENABLE Stalled - Device Not Responding *****\r\n" );
                                     #endif
+
                                 }
                             }
                             break;
@@ -2224,9 +2200,7 @@ void USBHostTasks( void )
                     switch (usbHostState & SUBSUBSTATE_MASK)
                     {
                         case SUBSUBSTATE_SEND_SET_CONFIGURATION:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Set configuration.\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Set configuration.\r\n" );
 
                             // Set up and send SET CONFIGURATION.
                             pEP0Data[0] = USB_SETUP_HOST_TO_DEVICE | USB_SETUP_TYPE_STANDARD | USB_SETUP_RECIPIENT_DEVICE;
@@ -2265,9 +2239,8 @@ void USBHostTasks( void )
                             break;
 
                         case SUBSUBSTATE_INIT_CLIENT_DRIVERS:
-                            #ifdef DEBUG_MODE
-                                UART2PrintString( "HOST: Initializing client drivers...\r\n" );
-                            #endif
+                            DEBUG_PutString( "HOST: Initializing client drivers...\r\n" );
+
                             _USB_SetNextState();
                             // Initialize client driver(s) for this configuration.
                             if (usbDeviceInfo.flags.bfUseDeviceClientDriver)
@@ -2275,9 +2248,8 @@ void USBHostTasks( void )
                                 // We have a device that requires only one client driver.  Make sure
                                 // that client driver can initialize this device.  If the client
                                 // driver initialization fails, we cannot enumerate this device.
-                                #ifdef DEBUG_MODE
-                                    UART2PrintString( "HOST: Using device client driver.\r\n" );
-                                #endif
+                                DEBUG_PutString( "HOST: Using device client driver.\r\n" );
+
                                 temp = usbDeviceInfo.deviceClientDriver;
                                 if (!usbClientDrvTable[temp].Initialize(usbDeviceInfo.deviceAddress, usbClientDrvTable[temp].flags, temp))
                                 {
@@ -2290,9 +2262,8 @@ void USBHostTasks( void )
                                 // We have a device that requires multiple client drivers.  Make sure
                                 // every required client driver can initialize this device.  If any
                                 // client driver initialization fails, we cannot enumerate the device.
-                                #ifdef DEBUG_MODE
-                                    UART2PrintString( "HOST: Scanning interfaces.\r\n" );
-                                #endif
+                                DEBUG_PutString( "HOST: Scanning interfaces.\r\n" );
+
                                 pCurrentInterface = usbDeviceInfo.pInterfaceList;
                                 while (pCurrentInterface)
                                 {
@@ -2305,6 +2276,18 @@ void USBHostTasks( void )
                                     pCurrentInterface = pCurrentInterface->next;
                                 }
                             }
+
+                            //Load the EP0 driver, if there was any
+                            if(usbDeviceInfo.flags.bfUseEP0Driver == 1)
+                            {
+                                temp = usbDeviceInfo.deviceEP0Driver;
+                                if (!usbClientDrvTable[temp].Initialize(usbDeviceInfo.deviceAddress, usbClientDrvTable[temp].flags, temp))
+                                {
+                                    _USB_SetErrorCode( USB_HOLDING_CLIENT_INIT_ERROR );
+                                    _USB_SetHoldState();
+                                }
+                            }
+
                             break;
 
                         default:
@@ -2378,9 +2361,8 @@ void USBHostTasks( void )
                     // We're here because we cannot communicate with the current device
                     // that is plugged in.  Turn off SOF's and all interrupts except
                     // the DETACH interrupt.
-                    #ifdef DEBUG_MODE
-                        UART2PrintString( "HOST: Holding.\r\n" );
-                    #endif
+                    DEBUG_PutString( "HOST: Holding.\r\n" );
+
                     U1CON               = USB_HOST_MODE_ENABLE | USB_SOF_DISABLE;                       // Turn of SOF's to cut down noise
                     U1IE                = 0;
                     U1IR                = 0xFF;
@@ -2389,6 +2371,11 @@ void USBHostTasks( void )
                     U1EIE               = 0;
                     U1EIR               = 0xFF;
                     U1IEbits.DETACHIE   = 1;
+
+                    #if defined(USB_ENABLE_1MS_EVENT)
+                        U1OTGIR                 = USB_INTERRUPT_T1MSECIF; // The interrupt is cleared by writing a '1' to the flag.
+                        U1OTGIEbits.T1MSECIE    = 1;
+                    #endif
 
                     switch (usbDeviceInfo.errorCode )
                     {
@@ -2802,9 +2789,7 @@ BYTE USBHostWrite( BYTE deviceAddress, BYTE endpoint, BYTE *data, DWORD size )
 
 void _USB_CheckCommandAndEnumerationAttempts( void )
 {
-    #ifdef DEBUG_MODE
-        UART2PutChar( '=' );
-    #endif
+    DEBUG_PutChar( '=' );
 
     // Clear the error and stall flags.  A stall here does not require
     // host intervention to clear.
@@ -2868,28 +2853,42 @@ void _USB_CheckCommandAndEnumerationAttempts( void )
 
 BOOL _USB_FindClassDriver( BYTE bClass, BYTE bSubClass, BYTE bProtocol, BYTE *pbClientDrv )
 {
-    int i;
+    USB_OVERRIDE_CLIENT_DRIVER_EVENT_DATA   eventData;
+    int                                     i;
+    USB_DEVICE_DESCRIPTOR                   *pDesc = (USB_DEVICE_DESCRIPTOR *)pDeviceDescriptor;
 
     i = 0;
     while (i < NUM_TPL_ENTRIES)
     {
         if ((usbTPL[i].flags.bfIsClassDriver == 1        ) &&
-            (usbTPL[i].device.bClass         == bClass   ) &&
-            (usbTPL[i].device.bSubClass      == bSubClass) &&
-            (usbTPL[i].device.bProtocol      == bProtocol)   )
+            (((usbTPL[i].flags.bfIgnoreClass == 0) ? (usbTPL[i].device.bClass == bClass) : TRUE)) &&
+            (((usbTPL[i].flags.bfIgnoreSubClass == 0) ? (usbTPL[i].device.bSubClass == bSubClass) : TRUE)) &&
+            (((usbTPL[i].flags.bfIgnoreProtocol == 0) ? (usbTPL[i].device.bProtocol == bProtocol) : TRUE))  )
         {
-            *pbClientDrv = usbTPL[i].ClientDriver;
-            #ifdef DEBUG_MODE
-                UART2PrintString( "HOST: Client driver found.\r\n" );
-            #endif
-            return TRUE;
+            // Make sure the application layer does not have a problem with the selection.
+            // If the application layer returns FALSE, which it should if the event is not
+            // defined, then accept the selection.
+            eventData.idVendor          = pDesc->idVendor;              
+            eventData.idProduct         = pDesc->idProduct;             
+            eventData.bDeviceClass      = bClass;          
+            eventData.bDeviceSubClass   = bSubClass;       
+            eventData.bDeviceProtocol   = bProtocol;       
+
+            if (!USB_HOST_APP_EVENT_HANDLER( USB_ROOT_HUB, EVENT_OVERRIDE_CLIENT_DRIVER_SELECTION,
+                            &eventData, sizeof(USB_OVERRIDE_CLIENT_DRIVER_EVENT_DATA) ))
+            {
+                *pbClientDrv = usbTPL[i].ClientDriver;
+
+                DEBUG_PutString( "HOST: Client driver found.\r\n" );
+
+                return TRUE;
+            }    
         }
         i++;
     }
 
-    #ifdef DEBUG_MODE
-        UART2PrintString( "HOST: Client driver NOT found.\r\n" );
-    #endif
+    DEBUG_PutString( "HOST: Client driver NOT found.\r\n" );
+
     return FALSE;
 
 } // _USB_FindClassDriver
@@ -2928,6 +2927,7 @@ BOOL _USB_FindDeviceLevelClientDriver( void )
     // Scan TPL
     i = 0;
     usbDeviceInfo.flags.bfUseDeviceClientDriver = 0;
+    usbDeviceInfo.flags.bfUseEP0Driver = 0;
     while (i < NUM_TPL_ENTRIES)
     {
         if (usbTPL[i].flags.bfIsClassDriver)
@@ -2937,30 +2937,60 @@ BOOL _USB_FindDeviceLevelClientDriver( void )
                 (usbTPL[i].device.bSubClass == pDesc->bDeviceSubClass) &&
                 (usbTPL[i].device.bProtocol == pDesc->bDeviceProtocol)   )
             {
-                #ifdef DEBUG_MODE
-                    UART2PrintString( "HOST: Device validated by class\r\n" );
-                #endif
+                DEBUG_PutString( "HOST: Device validated by class\r\n" );
+
                 usbDeviceInfo.flags.bfUseDeviceClientDriver = 1;
             }
         }
         else
         {
             // Check for a device-specific client driver by VID & PID
-            #ifdef ALLOW_GLOBAL_VID_AND_PID
-            if (((usbTPL[i].device.idVendor  == pDesc->idVendor ) &&
-                 (usbTPL[i].device.idProduct == pDesc->idProduct)) ||
-                ((usbTPL[i].device.idVendor  == 0xFFFF) &&
-                 (usbTPL[i].device.idProduct == 0xFFFF)))
-            #else
             if ((usbTPL[i].device.idVendor  == pDesc->idVendor ) &&
-                (usbTPL[i].device.idProduct == pDesc->idProduct)   )
-            #endif
+                (usbTPL[i].device.idProduct == pDesc->idProduct))
             {
-                #ifdef DEBUG_MODE
-                    UART2PrintString( "HOST: Device validated by VID/PID\r\n" );
-                #endif
-                usbDeviceInfo.flags.bfUseDeviceClientDriver = 1;
+                if( usbTPL[i].flags.bfEP0OnlyCustomDriver == 1 )
+                {
+                    usbDeviceInfo.flags.bfUseEP0Driver = 1;
+                    usbDeviceInfo.deviceEP0Driver = usbTPL[i].ClientDriver;
+
+                    // Select configuration if it is given in the TPL
+                    if (usbTPL[i].flags.bfSetConfiguration)
+                    {
+                        usbDeviceInfo.currentConfiguration = usbTPL[i].bConfiguration;
+                    }
+                }
+                else
+                {
+                    DEBUG_PutString( "HOST: Device validated by VID/PID\r\n" );
+
+                    usbDeviceInfo.flags.bfUseDeviceClientDriver = 1;
+                }
             }
+
+            #ifdef ALLOW_GLOBAL_VID_AND_PID
+            if ((usbTPL[i].device.idVendor  == 0xFFFF) &&
+                (usbTPL[i].device.idProduct == 0xFFFF))
+            {
+                USB_OVERRIDE_CLIENT_DRIVER_EVENT_DATA   eventData;
+                     
+                // Make sure the application layer does not have a problem with the selection.
+                // If the application layer returns FALSE, which it should if the event is not
+                // defined, then accept the selection.
+                eventData.idVendor          = pDesc->idVendor;              
+                eventData.idProduct         = pDesc->idProduct;             
+                eventData.bDeviceClass      = usbTPL[i].device.bClass;          
+                eventData.bDeviceSubClass   = usbTPL[i].device.bSubClass;       
+                eventData.bDeviceProtocol   = usbTPL[i].device.bProtocol;       
+    
+                if (!USB_HOST_APP_EVENT_HANDLER( USB_ROOT_HUB, EVENT_OVERRIDE_CLIENT_DRIVER_SELECTION,
+                                &eventData, sizeof(USB_OVERRIDE_CLIENT_DRIVER_EVENT_DATA) ))
+                {
+                    DEBUG_PutString( "HOST: Device validated by VID/PID\r\n" );
+
+                    usbDeviceInfo.flags.bfUseDeviceClientDriver = 1;
+                }
+            }    
+            #endif
         }
 
         if (usbDeviceInfo.flags.bfUseDeviceClientDriver)
@@ -2980,9 +3010,7 @@ BOOL _USB_FindDeviceLevelClientDriver( void )
         i++;
     }
 
-    #ifdef DEBUG_MODE
-        UART2PrintString( "HOST: Device not yet validated\r\n" );
-    #endif
+    DEBUG_PutString( "HOST: Device not yet validated\r\n" );
 
     return FALSE;
 }
@@ -3413,7 +3441,7 @@ void _USB_FindNextToken( void )
         // the number of bytes we are sending and stop sending isochronous
         // transfers when we reach that limit.
 
-        // TODO: Implement scheduling by using usbBusInfo.dBytesSentInFrame
+        // MCHP: Implement scheduling by using usbBusInfo.dBytesSentInFrame
 
         // Current Limitation:  The stack currently supports only one attached
         // device.  We will make the assumption that the control, isochronous, and
@@ -3428,7 +3456,7 @@ void _USB_FindNextToken( void )
         if (!usbBusInfo.flags.bfIsochronousTransfersDone)
         {
             // Look for any isochronous operations.
-            if (_USB_FindServiceEndpoint( USB_TRANSFER_TYPE_ISOCHRONOUS ))
+            while (_USB_FindServiceEndpoint( USB_TRANSFER_TYPE_ISOCHRONOUS ))
             {
                 switch (pCurrentEndpoint->transferState & TSTATE_MASK)
                 {
@@ -3436,35 +3464,30 @@ void _USB_FindNextToken( void )
                         switch (pCurrentEndpoint->transferState & TSUBSTATE_MASK)
                         {
                             case TSUBSTATE_ISOCHRONOUS_READ_DATA:
-                                if (pCurrentEndpoint->wIntervalCount == 0)
+                                // Don't overwrite data the user has not yet processed.  We will skip this interval.    
+                                if (((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid)
                                 {
-                                    // Reset the interval count for the next packet.
-                                    pCurrentEndpoint->wIntervalCount  = pCurrentEndpoint->wInterval;
-
-                                    // Don't overwrite data the user has not yet processed.  We will skip this interval.    
-                                    if (((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid)
-                                    {
-                                        // We have buffer overflow.
-                                    }
-                                    else
-                                    {
-                                        // Initialize the data buffer.
-                                        ((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid = 0;
-                                        pCurrentEndpoint->dataCount = 0;
-    
-                                        _USB_SetDATA01( DTS_DATA0 );    // Always DATA0 for isochronous
-                                        _USB_SetBDT( USB_TOKEN_IN );
-                                        _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_IN );
-                                        return;
-                                    }    
+                                    // We have buffer overflow.
                                 }
+                                else
+                                {
+                                    // Initialize the data buffer.
+                                    ((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid = 0;
+                                    pCurrentEndpoint->dataCount = 0;
+
+                                    _USB_SetDATA01( DTS_DATA0 );    // Always DATA0 for isochronous
+                                    _USB_SetBDT( USB_TOKEN_IN );
+                                    _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_IN );
+                                    return;
+                                }    
                                 break;
 
                             case TSUBSTATE_ISOCHRONOUS_READ_COMPLETE:
                                 // Isochronous transfers are continuous until the user stops them.
                                 // Send an event that there is new data, and reset for the next
                                 // interval.
-                                pCurrentEndpoint->transferState = TSTATE_ISOCHRONOUS_READ | TSUBSTATE_ISOCHRONOUS_READ_DATA;
+                                pCurrentEndpoint->transferState     = TSTATE_ISOCHRONOUS_READ | TSUBSTATE_ISOCHRONOUS_READ_DATA;
+                                pCurrentEndpoint->wIntervalCount    = pCurrentEndpoint->wInterval;
 
                                 // Update the valid data length for this buffer.
                                 ((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].dataLength = pCurrentEndpoint->dataCount;
@@ -3508,7 +3531,8 @@ void _USB_FindNextToken( void )
                                 // Isochronous transfers are continuous until the user stops them.
                                 // Send an event that there is an error, and reset for the next
                                 // interval.
-                                pCurrentEndpoint->transferState = TSTATE_ISOCHRONOUS_READ | TSUBSTATE_ISOCHRONOUS_READ_DATA;
+                                pCurrentEndpoint->transferState     = TSTATE_ISOCHRONOUS_READ | TSUBSTATE_ISOCHRONOUS_READ_DATA;
+                                pCurrentEndpoint->wIntervalCount    = pCurrentEndpoint->wInterval;
                                 #if defined( USB_ENABLE_TRANSFER_EVENT )
                                     if (StructQueueIsNotFull(&usbEventQueue, USB_EVENT_QUEUE_DEPTH))
                                     {
@@ -3539,32 +3563,27 @@ void _USB_FindNextToken( void )
                         switch (pCurrentEndpoint->transferState & TSUBSTATE_MASK)
                         {
                             case TSUBSTATE_ISOCHRONOUS_WRITE_DATA:
-                                if (pCurrentEndpoint->wIntervalCount == 0)
+                                if (!((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid)
                                 {
-                                    // Reset the interval count for the next packet.
-                                    pCurrentEndpoint->wIntervalCount  = pCurrentEndpoint->wInterval;
-
-                                    if (!((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid)
-                                    {
-                                        // We have buffer underrun.
-                                    }
-                                    else
-                                    {
-                                        pCurrentEndpoint->dataCount = ((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].dataLength;
-    
-                                        _USB_SetDATA01( DTS_DATA0 );    // Always DATA0 for isochronous
-                                        _USB_SetBDT( USB_TOKEN_OUT );
-                                        _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_OUT );
-                                        return;
-                                    }    
+                                    // We have buffer underrun.
                                 }
+                                else
+                                {
+                                    pCurrentEndpoint->dataCount = ((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].dataLength;
+
+                                    _USB_SetDATA01( DTS_DATA0 );    // Always DATA0 for isochronous
+                                    _USB_SetBDT( USB_TOKEN_OUT );
+                                    _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_OUT );
+                                    return;
+                                }    
                                 break;
 
                             case TSUBSTATE_ISOCHRONOUS_WRITE_COMPLETE:
                                 // Isochronous transfers are continuous until the user stops them.
                                 // Send an event that data has been sent, and reset for the next
                                 // interval.
-                                pCurrentEndpoint->transferState = TSTATE_ISOCHRONOUS_WRITE | TSUBSTATE_ISOCHRONOUS_WRITE_DATA;
+                                pCurrentEndpoint->wIntervalCount    = pCurrentEndpoint->wInterval;
+                                pCurrentEndpoint->transferState     = TSTATE_ISOCHRONOUS_WRITE | TSUBSTATE_ISOCHRONOUS_WRITE_DATA;
 
                                 // Update the valid data length for this buffer.
                                 ((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid = 0;
@@ -3600,13 +3619,16 @@ void _USB_FindNextToken( void )
                                 {
                                     ((ISOCHRONOUS_DATA *)pCurrentEndpoint->pUserData)->currentBufferUSB = 0;
                                 }
+								((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].bfDataLengthValid = 1;                                
                                 break;
 
                             case TSUBSTATE_ERROR:
                                 // Isochronous transfers are continuous until the user stops them.
                                 // Send an event that there is an error, and reset for the next
                                 // interval.
-                                pCurrentEndpoint->transferState = TSTATE_ISOCHRONOUS_WRITE | TSUBSTATE_ISOCHRONOUS_WRITE_DATA;
+                                pCurrentEndpoint->transferState     = TSTATE_ISOCHRONOUS_WRITE | TSUBSTATE_ISOCHRONOUS_WRITE_DATA;
+                                pCurrentEndpoint->wIntervalCount    = pCurrentEndpoint->wInterval;
+
                                 #if defined( USB_ENABLE_TRANSFER_EVENT )
                                     if (StructQueueIsNotFull(&usbEventQueue, USB_EVENT_QUEUE_DEPTH))
                                     {
@@ -3643,8 +3665,9 @@ void _USB_FindNextToken( void )
                 {
                     // We should never use this, but in case we do, put the endpoint
                     // in a recoverable state.
-                    pCurrentEndpoint->transferState               = TSTATE_IDLE;
-                    pCurrentEndpoint->status.bfTransferComplete   = 1;
+                    pCurrentEndpoint->transferState             = TSTATE_IDLE;
+                    pCurrentEndpoint->wIntervalCount            = pCurrentEndpoint->wInterval;
+                    pCurrentEndpoint->status.bfTransferComplete = 1;
                 }
             }
 
@@ -3657,7 +3680,7 @@ void _USB_FindNextToken( void )
         if (!usbBusInfo.flags.bfInterruptTransfersDone)
         {
             // Look for any interrupt operations.
-            if (_USB_FindServiceEndpoint( USB_TRANSFER_TYPE_INTERRUPT ))
+            while (_USB_FindServiceEndpoint( USB_TRANSFER_TYPE_INTERRUPT ))
             {
                 switch (pCurrentEndpoint->transferState & TSTATE_MASK)
                 {
@@ -3665,20 +3688,15 @@ void _USB_FindNextToken( void )
                         switch (pCurrentEndpoint->transferState & TSUBSTATE_MASK)
                         {
                             case TSUBSTATE_INTERRUPT_READ_DATA:
-                                if (pCurrentEndpoint->wIntervalCount == 0)
-                                {
-                                    // Reset the interval count for the next packet.
-                                    pCurrentEndpoint->wIntervalCount = pCurrentEndpoint->wInterval;
-
-                                    _USB_SetBDT( USB_TOKEN_IN );
-                                    _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_IN );
-                                    return;
-                                }
+                                _USB_SetBDT( USB_TOKEN_IN );
+                                _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_IN );
+                                return;
                                 break;
 
                             case TSUBSTATE_INTERRUPT_READ_COMPLETE:
-                                pCurrentEndpoint->transferState               = TSTATE_IDLE;
-                                pCurrentEndpoint->status.bfTransferComplete   = 1;
+                                pCurrentEndpoint->transferState             = TSTATE_IDLE;
+                                pCurrentEndpoint->wIntervalCount            = pCurrentEndpoint->wInterval;
+                                pCurrentEndpoint->status.bfTransferComplete = 1;
                                 #if defined( USB_ENABLE_TRANSFER_EVENT )
                                     if (StructQueueIsNotFull(&usbEventQueue, USB_EVENT_QUEUE_DEPTH))
                                     {
@@ -3701,8 +3719,9 @@ void _USB_FindNextToken( void )
                                 break;
 
                             case TSUBSTATE_ERROR:
-                                pCurrentEndpoint->transferState               = TSTATE_IDLE;
-                                pCurrentEndpoint->status.bfTransferComplete   = 1;
+                                pCurrentEndpoint->transferState             = TSTATE_IDLE;
+                                pCurrentEndpoint->wIntervalCount            = pCurrentEndpoint->wInterval;
+                                pCurrentEndpoint->status.bfTransferComplete = 1;
                                 #if defined( USB_ENABLE_TRANSFER_EVENT )
                                     if (StructQueueIsNotFull(&usbEventQueue, USB_EVENT_QUEUE_DEPTH))
                                     {
@@ -3734,20 +3753,15 @@ void _USB_FindNextToken( void )
                         switch (pCurrentEndpoint->transferState & TSUBSTATE_MASK)
                         {
                             case TSUBSTATE_INTERRUPT_WRITE_DATA:
-                                if (pCurrentEndpoint->wIntervalCount == 0)
-                                {
-                                    // Reset the interval count for the next packet.
-                                    pCurrentEndpoint->wIntervalCount = pCurrentEndpoint->wInterval;
-
-                                    _USB_SetBDT( USB_TOKEN_OUT );
-                                    _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_OUT );
-                                    return;
-                                }
+                                _USB_SetBDT( USB_TOKEN_OUT );
+                                _USB_SendToken( pCurrentEndpoint->bEndpointAddress, USB_TOKEN_OUT );
+                                return;
                                 break;
 
                             case TSUBSTATE_INTERRUPT_WRITE_COMPLETE:
-                                pCurrentEndpoint->transferState               = TSTATE_IDLE;
-                                pCurrentEndpoint->status.bfTransferComplete   = 1;
+                                pCurrentEndpoint->transferState             = TSTATE_IDLE;
+                                pCurrentEndpoint->wIntervalCount            = pCurrentEndpoint->wInterval;
+                                pCurrentEndpoint->status.bfTransferComplete = 1;
                                 #if defined( USB_ENABLE_TRANSFER_EVENT )
                                     if (StructQueueIsNotFull(&usbEventQueue, USB_EVENT_QUEUE_DEPTH))
                                     {
@@ -3770,8 +3784,9 @@ void _USB_FindNextToken( void )
                                 break;
 
                             case TSUBSTATE_ERROR:
-                                pCurrentEndpoint->transferState               = TSTATE_IDLE;
-                                pCurrentEndpoint->status.bfTransferComplete   = 1;
+                                pCurrentEndpoint->transferState             = TSTATE_IDLE;
+                                pCurrentEndpoint->wIntervalCount            = pCurrentEndpoint->wInterval;
+                                pCurrentEndpoint->status.bfTransferComplete = 1;
                                 #if defined( USB_ENABLE_TRANSFER_EVENT )
                                     if (StructQueueIsNotFull(&usbEventQueue, USB_EVENT_QUEUE_DEPTH))
                                     {
@@ -3808,8 +3823,9 @@ void _USB_FindNextToken( void )
                 {
                     // We should never use this, but in case we do, put the endpoint
                     // in a recoverable state.
-                    pCurrentEndpoint->status.bfTransferComplete   = 1;
-                    pCurrentEndpoint->transferState               = TSTATE_IDLE;
+                    pCurrentEndpoint->transferState             = TSTATE_IDLE;
+                    pCurrentEndpoint->wIntervalCount            = pCurrentEndpoint->wInterval;
+                    pCurrentEndpoint->status.bfTransferComplete = 1;
                 }
             }
 
@@ -4081,8 +4097,11 @@ BOOL _USB_FindServiceEndpoint( BYTE transferType )
 						}
 						else
 						{
-							pCurrentEndpoint = pEndpoint;
-							return TRUE;
+							if (pEndpoint->wIntervalCount == 0)
+							{
+    							pCurrentEndpoint = pEndpoint;
+    							return TRUE;
+    			            }				
 						}
 						break;
 					#endif
@@ -4524,10 +4543,101 @@ void _USB_NotifyClients( BYTE address, USB_EVENT event, void *data, unsigned int
                 usbClientDrvTable[pInterface->clientDriver].EventHandler(address, event, data, size);
                 pInterface = pInterface->next;
             }
+
+            if(usbDeviceInfo.flags.bfUseEP0Driver == 1)
+            {
+                usbClientDrvTable[usbDeviceInfo.deviceEP0Driver].EventHandler(address, event, data, size);
+            }
             break;
     }
 } // _USB_NotifyClients
 
+/****************************************************************************
+  Function:
+    void _USB_NotifyClients( BYTE address, USB_EVENT event, void *data,
+                unsigned int size )
+
+  Description:
+    This routine notifies all active client drivers for the given device of
+    the given event.
+
+  Precondition:
+    None
+
+  Parameters:
+    BYTE address        - Address of the device generating the event
+    USB_EVENT event     - Event ID
+    void *data          - Pointer to event data
+    unsigned int size   - Size of data pointed to by data
+
+  Returns:
+    None
+
+  Remarks:
+    When this driver is modified to support multiple devices, this function
+    will require modification.
+  ***************************************************************************/
+
+void _USB_NotifyDataClients( BYTE address, USB_EVENT event, void *data, unsigned int size )
+{
+    USB_INTERFACE_INFO  *pInterface;
+
+    // Some events go to all drivers, some only to specific drivers.
+    switch(event)
+    {
+        default:
+            pInterface = usbDeviceInfo.pInterfaceList;
+            while (pInterface != NULL)  // Scan the interface list for all active drivers.
+            {
+                usbClientDrvTable[pInterface->clientDriver].DataEventHandler(address, event, data, size);
+                pInterface = pInterface->next;
+            }
+            break;
+    }
+} // _USB_NotifyClients
+
+/****************************************************************************
+  Function:
+    void _USB_NotifyAllDataClients( BYTE address, USB_EVENT event, void *data,
+                unsigned int size )
+
+  Description:
+    This routine notifies all client drivers (active or not) for the given device of
+    the given event.
+
+  Precondition:
+    None
+
+  Parameters:
+    BYTE address        - Address of the device generating the event
+    USB_EVENT event     - Event ID
+    void *data          - Pointer to event data
+    unsigned int size   - Size of data pointed to by data
+
+  Returns:
+    None
+
+  Remarks:
+    When this driver is modified to support multiple devices, this function
+    will require modification.
+  ***************************************************************************/
+#if defined(USB_ENABLE_1MS_EVENT) && defined(USB_HOST_APP_DATA_EVENT_HANDLER)
+void _USB_NotifyAllDataClients( BYTE address, USB_EVENT event, void *data, unsigned int size )
+{
+    WORD i;
+
+    // Some events go to all drivers, some only to specific drivers.
+    switch(event)
+    {
+        default:
+            for(i=0;i<NUM_CLIENT_DRIVER_ENTRIES;i++)
+            {
+                usbClientDrvTable[i].DataEventHandler(address, event, data, size);
+            }
+            break;
+    }
+} // _USB_NotifyClients
+#endif
 
 /****************************************************************************
   Function:
@@ -4714,18 +4824,22 @@ BOOL _USB_ParseConfigurationDescriptor( void )
                 if ((newInterfaceInfo = (USB_INTERFACE_INFO *)USB_MALLOC( sizeof(USB_INTERFACE_INFO) )) == NULL)
                 {
                     // Out of memory
-                    error = TRUE;   
+                    error = TRUE; 
+                      
                 }
 
-                // Initialize the interface node
-                newInterfaceInfo->interface             = bInterfaceNumber;
-                newInterfaceInfo->clientDriver          = ClientDriver;
-                newInterfaceInfo->pInterfaceSettings    = NULL;
-                newInterfaceInfo->pCurrentSetting       = NULL;
-
-                // Insert it into the list.
-                newInterfaceInfo->next                  = pTempInterfaceList;
-                pTempInterfaceList                      = newInterfaceInfo;
+                if(error == FALSE)
+                {
+                    // Initialize the interface node
+                    newInterfaceInfo->interface             = bInterfaceNumber;
+                    newInterfaceInfo->clientDriver          = ClientDriver;
+                    newInterfaceInfo->pInterfaceSettings    = NULL;
+                    newInterfaceInfo->pCurrentSetting       = NULL;
+    
+                    // Insert it into the list.
+                    newInterfaceInfo->next                  = pTempInterfaceList;
+                    pTempInterfaceList                      = newInterfaceInfo;
+                }
             }
 
             if (!error)
@@ -4837,9 +4951,7 @@ BOOL _USB_ParseConfigurationDescriptor( void )
     if (pTempInterfaceList == NULL)
     {
         // We could find no supported interfaces.
-        #ifdef DEBUG_MODE
-            UART2PrintString( "HOST: No supported interfaces.\r\n" );
-        #endif
+        DEBUG_PutString( "HOST: No supported interfaces.\r\n" );
 
         error = TRUE;
     }
@@ -4880,9 +4992,8 @@ BOOL _USB_ParseConfigurationDescriptor( void )
         usbDeviceInfo.currentConfigurationPower = bMaxPower;
     
         // Success!
-        #ifdef DEBUG_MODE
-            UART2PrintString( "HOST: Parse Descriptor success\r\n" );
-        #endif
+        DEBUG_PutString( "HOST: Parse Descriptor success\r\n" );
+
         usbDeviceInfo.pInterfaceList = pTempInterfaceList;
         return TRUE;
     }    
@@ -4998,25 +5109,12 @@ void _USB_SendToken( BYTE endpoint, BYTE tokenType )
 
     U1EP0 = temp;
 
-    #ifdef DEBUG_MODE
-        if (usbBusInfo.flags.bfTokenAlreadyWritten) UART2PutChar( '+' );
-//        if (U1CONbits.TOKBUSY) UART2PutChar( '+' );
-    #endif
-
     U1ADDR = usbDeviceInfo.deviceAddressAndSpeed;
     U1TOK = (tokenType << 4) | (endpoint & 0x7F);
 
     // Lock out anyone from writing another token until this one has finished.
 //    U1CONbits.TOKBUSY = 1;
     usbBusInfo.flags.bfTokenAlreadyWritten = 1;
-
-    #ifdef DEBUG_MODE
-        //UART2PutChar('(');
-        //UART2PutHex(U1ADDR);
-        //UART2PutHex(U1EP0);
-        //UART2PutHex(U1TOK);
-        //UART2PutChar(')');
-    #endif
 }
 
 
@@ -5123,7 +5221,7 @@ void _USB_SetBDT( BYTE token )
     // Load up the BDT address.
     if (token == USB_TOKEN_SETUP)
     {
-        #if defined(__C30__) || defined(__PIC32MX__)
+        #if defined(__C30__) || defined(__PIC32MX__) || defined __XC16__
             pBDT->ADR  = ConvertToPhysicalAddress(pCurrentEndpoint->pUserDataSETUP);
         #else
             #error Cannot set BDT address.
@@ -5131,7 +5229,7 @@ void _USB_SetBDT( BYTE token )
     }
     else
     {
-        #if defined(__C30__)
+        #if defined(__C30__) || defined __XC16__
             if (pCurrentEndpoint->bmAttributes.bfTransferType == USB_TRANSFER_TYPE_ISOCHRONOUS)
             {
                 pBDT->ADR  = ConvertToPhysicalAddress(((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->buffers[((ISOCHRONOUS_DATA *)(pCurrentEndpoint->pUserData))->currentBufferUSB].pBuffer);
@@ -5162,21 +5260,6 @@ void _USB_SetBDT( BYTE token )
 
     // Transfer the BD to the USB OTG module.
     pBDT->STAT.UOWN     = 1;
-
-    #ifdef DEBUG_MODE
-//        UART2PutChar('{');
-//        UART2PutHex((pBDT->v[0] >> 24) & 0xff);
-//        UART2PutHex((pBDT->v[0] >> 16) & 0xff);
-//        UART2PutHex((pBDT->v[0] >> 8) & 0xff);
-//        UART2PutHex((pBDT->v[0]) & 0xff);
-//        UART2PutChar('-');
-//        UART2PutHex((currentPacketSize >> 24) & 0xff);
-//        UART2PutHex((pBDT->v[1] >> 16) & 0xff);
-//        UART2PutHex((currentPacketSize >> 8) & 0xff);
-//        UART2PutHex(currentPacketSize & 0xff);
-//        UART2PutChar('}');
-    #endif
-
 }
 
 
@@ -5278,20 +5361,19 @@ BOOL _USB_TransferInProgress( void )
 #define U1STAT_TX_MASK                      0x08    // U1STAT bit mask for Tx/Rx indication
 #define U1STAT_ODD_MASK                     0x04    // U1STAT bit mask for even/odd buffer bank
 
-#if defined(__C30__)
+#if defined(__C30__) || defined __XC16__
 void __attribute__((__interrupt__, no_auto_psv)) _USB1Interrupt( void )
 #elif defined(__PIC32MX__)
-#pragma interrupt _USB1Interrupt ipl4 vector 45
-void _USB1Interrupt( void )
+void __ISR(_USB_1_VECTOR, ipl4) _USB1Interrupt(void)
 #else
     #error Cannot define timer interrupt vector.
 #endif
 {
 
-    #if defined( __C30__)
+    #if defined( __C30__) || defined __XC16__
         IFS5 &= 0xFFBF;
     #elif defined( __PIC32MX__)
-        IFS1CLR = 0x02000000;
+        IFS1CLR = _IFS1_USBIF_MASK;
     #else
         #error Cannot clear USB interrupt.
     #endif
@@ -5304,9 +5386,14 @@ void _USB1Interrupt( void )
         // The interrupt is cleared by writing a '1' to it.
         U1OTGIR = USB_INTERRUPT_T1MSECIF;
 
-        #ifdef DEBUG_MODE
-            UART2PutChar('~');
+        #if defined(USB_ENABLE_1MS_EVENT) && defined(USB_HOST_APP_DATA_EVENT_HANDLER)
+            msec_count++;
+
+            //Notify ping all client drivers of 1MSEC event (address, event, data, sizeof_data)
+            _USB_NotifyAllDataClients(0, EVENT_1MS, (void*)&msec_count, 0);
         #endif
+
+        DEBUG_PutChar('~');
 
         #ifdef  USB_SUPPORT_OTG
             if (USBOTGGetSRPTimeOutFlag())
@@ -5329,28 +5416,50 @@ void _USB1Interrupt( void )
 
             else
             {
-                numTimerInterrupts--;
-                if (numTimerInterrupts == 0)
+                if(numTimerInterrupts != 0)
                 {
-                    // Turn off the timer interrupt.
-                    U1OTGIEbits.T1MSECIE = 0;
+                    numTimerInterrupts--;
 
-                    // Advance to the next state.  We can do this here, because the only time
-                    // we'll get a timer interrupt is while we are in one of the holding states.
-                    _USB_SetNextSubSubState();
+                    if (numTimerInterrupts == 0)
+                    {
+                        //If we aren't using the 1ms events, then turn of the interrupt to
+                        // save CPU time
+                        #if !defined(USB_ENABLE_1MS_EVENT)
+                            // Turn off the timer interrupt.
+                            U1OTGIEbits.T1MSECIE = 0;
+                        #endif
+    
+                        if((usbHostState & STATE_MASK) != STATE_DETACHED)
+                        {
+                            // Advance to the next state.  We can do this here, because the only time
+                            // we'll get a timer interrupt is while we are in one of the holding states.
+                            _USB_SetNextSubSubState();
+                        }
+                    }
                 }
             }
          #else
 
-            numTimerInterrupts--;
-            if (numTimerInterrupts == 0)
+            if(numTimerInterrupts != 0)
             {
-                // Turn off the timer interrupt.
-                U1OTGIEbits.T1MSECIE = 0;
+                numTimerInterrupts--;
 
-                // Advance to the next state.  We can do this here, because the only time
-                // we'll get a timer interrupt is while we are in one of the holding states.
-                _USB_SetNextSubSubState();
+                if (numTimerInterrupts == 0)
+                {
+                    //If we aren't using the 1ms events, then turn of the interrupt to
+                    // save CPU time
+                    #if !defined(USB_ENABLE_1MS_EVENT)
+                        // Turn off the timer interrupt.
+                        U1OTGIEbits.T1MSECIE = 0;
+                    #endif
+
+                    if((usbHostState & STATE_MASK) != STATE_DETACHED)
+                    {
+                        // Advance to the next state.  We can do this here, because the only time
+                        // we'll get a timer interrupt is while we are in one of the holding states.
+                        _USB_SetNextSubSubState();
+                    }
+                }
             }
          #endif
     }
@@ -5361,9 +5470,7 @@ void _USB1Interrupt( void )
     // The attach interrupt is level, not edge, triggered.  So make sure we have it enabled.
     if (U1IEbits.ATTACHIE && U1IRbits.ATTACHIF)
     {
-        #ifdef DEBUG_MODE
-            UART2PutChar( '[' );
-        #endif
+        DEBUG_PutChar( '[' );
 
         // The attach interrupt is level, not edge, triggered.  If we clear it, it just
         // comes right back.  So clear the enable instead
@@ -5392,9 +5499,7 @@ void _USB1Interrupt( void )
 
     if (U1IEbits.DETACHIE && U1IRbits.DETACHIF)
     {
-        #ifdef DEBUG_MODE
-            UART2PutChar( ']' );
-        #endif
+        DEBUG_PutChar( ']' );
 
         U1IR                    = USB_INTERRUPT_DETACH;
         U1IEbits.DETACHIE       = 0;
@@ -5483,7 +5588,7 @@ void _USB1Interrupt( void )
     if ((U1IEbits.TRNIE && U1IRbits.TRNIF) &&
         (!(U1IEbits.UERRIE && U1IRbits.UERRIF) || (pCurrentEndpoint->bmAttributes.bfTransferType == USB_TRANSFER_TYPE_ISOCHRONOUS)))
     {
-        #if defined(__C30__)
+        #if defined(__C30__) || defined __XC16__
             U1STATBITS          copyU1STATbits;
         #elif defined(__PIC32MX__)
             __U1STATbits_t      copyU1STATbits;
@@ -5493,9 +5598,7 @@ void _USB1Interrupt( void )
         WORD                    packetSize;
         BDT_ENTRY               *pBDT;
 
-        #ifdef DEBUG_MODE
-            UART2PutChar( '!' );
-        #endif
+        DEBUG_PutChar( '!' );
 
         // The previous token has finished, so clear the way for writing a new one.
         usbBusInfo.flags.bfTokenAlreadyWritten = 0;
@@ -5695,9 +5798,8 @@ void _USB1Interrupt( void )
                 // The application must clear this if not a control endpoint.
                 // A stall on a control endpoint does not indicate that the
                 // endpoint is halted.
-                #ifdef DEBUG_MODE
-                    UART2PutChar( '^' );
-                #endif
+                DEBUG_PutChar( '^' );
+
                 pCurrentEndpoint->status.bfStalled = 1;
                 pCurrentEndpoint->bErrorCode       = USB_ENDPOINT_STALLED;
                 _USB_SetTransferErrorState( pCurrentEndpoint );
@@ -5751,9 +5853,11 @@ void _USB1Interrupt( void )
         USB_ENDPOINT_INFO           *pEndpoint;
         USB_INTERFACE_INFO          *pInterface;
 
-        #ifdef DEBUG_MODE
-//            UART2PutChar( '$' );
+        #if defined(USB_ENABLE_SOF_EVENT) && defined(USB_HOST_APP_DATA_EVENT_HANDLER)
+            //Notify ping all client drivers of SOF event (address, event, data, sizeof_data)
+            _USB_NotifyDataClients(0, EVENT_SOF, NULL, 0);
         #endif
+
         U1IR = USB_INTERRUPT_SOF; // Clear the interrupt by writing a '1' to the flag.
 
         pInterface = usbDeviceInfo.pInterfaceList;
@@ -5800,10 +5904,8 @@ void _USB1Interrupt( void )
 
     if (U1IEbits.UERRIE && U1IRbits.UERRIF)
     {
-        #ifdef DEBUG_MODE
-            UART2PutChar('#');
-            UART2PutHex( U1EIR );
-        #endif
+        DEBUG_PutChar('#');
+        DEBUG_PutHexUINT8( U1EIR );
 
         // The previous token has finished, so clear the way for writing a new one.
         usbBusInfo.flags.bfTokenAlreadyWritten = 0;
