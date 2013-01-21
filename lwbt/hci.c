@@ -1448,10 +1448,10 @@ err_t lp_acl_write(struct bd_addr *bdaddr, struct pbuf *p, u16_t len, u8_t pb)
 
 	((u8_t*)q->payload)[0] = HCI_ACL_DATA_PACKET;
 	t = (link->conhdl | (pb << 12)) & 0x3FFF;
-	((u8_t*)q->payload)[1] = (u8_t)(t & 0x00ff);
-	((u8_t*)q->payload)[2] = (u8_t)(t & 0xff00) >> 8;
-	((u8_t*)q->payload)[3] = (u8_t)(len & 0x00ff);
-	((u8_t*)q->payload)[4] = (u8_t)(len & 0xff00) >> 8;
+	((u8_t*)q->payload)[1] = t;
+	((u8_t*)q->payload)[2] = t >> 8;
+	((u8_t*)q->payload)[3] = len;
+	((u8_t*)q->payload)[4] = len >> 8;
 //	aclhdr = (struct hci_acl_hdr *)(((u8_t*)q->payload)+1);
 //	aclhdr->conhdl_pb_bc = link->conhdl; /* Received from connection complete event */
 //	aclhdr->conhdl_pb_bc |= pb << 12; /* Packet boundary flag */
